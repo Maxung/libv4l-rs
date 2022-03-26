@@ -12,7 +12,7 @@ use crate::{capability::Capabilities, control::Control};
 /// Linux capture device abstraction
 pub struct Device {
     /// Raw handle
-    handle: Arc<Handle>,
+    pub handle: Arc<Handle>,
 }
 
 impl Device {
