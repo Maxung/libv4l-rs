@@ -8,6 +8,7 @@ use crate::v4l2::vidioc;
 mod detail {
     use crate::v4l2::vidioc;
     use crate::v4l_sys::*;
+    use std::convert::TryInto;
 
     pub unsafe fn open(path: *const std::os::raw::c_char, flags: i32) -> std::os::raw::c_int {
         v4l2_open(path, flags)
@@ -20,7 +21,14 @@ mod detail {
         request: vidioc::_IOC_TYPE,
         argp: *mut std::os::raw::c_void,
     ) -> std::os::raw::c_int {
-        v4l2_ioctl(fd, request, argp)
+        // libv4l expects `request` to be a u64, but this is not guaranteed on all platforms.
+        // For the default CI platform (x86_64) clippy will complain about a useless conversion.
+        #![allow(clippy::useless_conversion)]
+        v4l2_ioctl(
+            fd,
+            request.try_into().expect("vidioc::_IOC_TYPE -> u64 failed"),
+            argp,
+        )
     }
     pub unsafe fn mmap(
         start: *mut std::os::raw::c_void,
@@ -28,12 +36,22 @@ mod detail {
         prot: std::os::raw::c_int,
         flags: std::os::raw::c_int,
         fd: std::os::raw::c_int,
-        offset: i64,
+        offset: libc::off_t,
     ) -> *mut std::os::raw::c_void {
-        v4l2_mmap(start, length as u64, prot, flags, fd, offset)
+        // libv4l expects `request` to be a u64, but this is not guaranteed on all platforms.
+        // For the default CI platform (x86_64) clippy will complain about a useless conversion.
+        #![allow(clippy::useless_conversion)]
+        v4l2_mmap(
+            start,
+            length.try_into().expect("usize -> c size_t failed"),
+            prot,
+            flags,
+            fd,
+            offset as i64,
+        )
     }
     pub unsafe fn munmap(start: *mut std::os::raw::c_void, length: usize) -> std::os::raw::c_int {
-        v4l2_munmap(start, length as u64)
+        v4l2_munmap(start, length.try_into().expect("usize -> c size_t failed"))
     }
 }
 

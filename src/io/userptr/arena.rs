@@ -2,7 +2,6 @@ use std::{io, mem, sync::Arc};
 
 use crate::buffer;
 use crate::device::Handle;
-use crate::io::arena::Arena as ArenaTrait;
 use crate::memory::Memory;
 use crate::v4l2;
 use crate::v4l_sys::*;
@@ -12,8 +11,8 @@ use crate::v4l_sys::*;
 /// All buffers are released in the Drop impl.
 pub struct Arena {
     handle: Arc<Handle>,
-    bufs: Vec<Vec<u8>>,
-    buf_type: buffer::Type,
+    pub bufs: Vec<Vec<u8>>,
+    pub buf_type: buffer::Type,
 }
 
 impl Arena {
@@ -31,6 +30,74 @@ impl Arena {
             handle,
             bufs: Vec::new(),
             buf_type,
+        }
+    }
+
+    fn requestbuffers_desc(&self) -> v4l2_requestbuffers {
+        v4l2_requestbuffers {
+            type_: self.buf_type as u32,
+            memory: Memory::UserPtr as u32,
+            ..unsafe { mem::zeroed() }
+        }
+    }
+
+    pub fn allocate(&mut self, count: u32) -> io::Result<u32> {
+        // we need to get the maximum buffer size from the format first
+        let mut v4l2_fmt = v4l2_format {
+            type_: self.buf_type as u32,
+            ..unsafe { mem::zeroed() }
+        };
+        unsafe {
+            v4l2::ioctl(
+                self.handle.fd(),
+                v4l2::vidioc::VIDIOC_G_FMT,
+                &mut v4l2_fmt as *mut _ as *mut std::os::raw::c_void,
+            )?;
+        }
+
+        #[cfg(feature = "v4l-sys")]
+        eprintln!(
+            "\n### WARNING ###\n\
+            As of early 2020, libv4l2 still does not support USERPTR buffers!\n\
+            You may want to use this crate with the raw v4l2 FFI bindings instead!\n"
+        );
+
+        let mut v4l2_reqbufs = v4l2_requestbuffers {
+            count,
+            ..self.requestbuffers_desc()
+        };
+        unsafe {
+            v4l2::ioctl(
+                self.handle.fd(),
+                v4l2::vidioc::VIDIOC_REQBUFS,
+                &mut v4l2_reqbufs as *mut _ as *mut std::os::raw::c_void,
+            )?;
+        }
+
+        // allocate the new user buffers
+        self.bufs.resize(v4l2_reqbufs.count as usize, Vec::new());
+        for i in 0..v4l2_reqbufs.count {
+            let buf = &mut self.bufs[i as usize];
+            unsafe {
+                buf.resize(v4l2_fmt.fmt.pix.sizeimage as usize, 0);
+            }
+        }
+
+        Ok(v4l2_reqbufs.count)
+    }
+
+    pub fn release(&mut self) -> io::Result<()> {
+        // free all buffers by requesting 0
+        let mut v4l2_reqbufs = v4l2_requestbuffers {
+            count: 0,
+            ..self.requestbuffers_desc()
+        };
+        unsafe {
+            v4l2::ioctl(
+                self.handle.fd(),
+                v4l2::vidioc::VIDIOC_REQBUFS,
+                &mut v4l2_reqbufs as *mut _ as *mut std::os::raw::c_void,
+            )
         }
     }
 }
@@ -55,90 +122,5 @@ impl Drop for Arena {
 
             panic!("{:?}", e)
         }
-    }
-}
-
-impl ArenaTrait for Arena {
-    type Buffer = [u8];
-
-    fn allocate(&mut self, count: u32) -> io::Result<u32> {
-        // we need to get the maximum buffer size from the format first
-        let mut v4l2_fmt: v4l2_format;
-        unsafe {
-            v4l2_fmt = mem::zeroed();
-            v4l2_fmt.type_ = self.buf_type as u32;
-            v4l2::ioctl(
-                self.handle.fd(),
-                v4l2::vidioc::VIDIOC_G_FMT,
-                &mut v4l2_fmt as *mut _ as *mut std::os::raw::c_void,
-            )?;
-        }
-
-        #[cfg(feature = "v4l-sys")]
-        eprintln!(
-            "\n### WARNING ###\n\
-            As of early 2020, libv4l2 still does not support USERPTR buffers!\n\
-            You may want to use this crate with the raw v4l2 FFI bindings instead!\n"
-        );
-
-        let mut v4l2_reqbufs: v4l2_requestbuffers;
-        unsafe {
-            v4l2_reqbufs = mem::zeroed();
-            v4l2_reqbufs.type_ = self.buf_type as u32;
-            v4l2_reqbufs.count = count;
-            v4l2_reqbufs.memory = Memory::UserPtr as u32;
-            v4l2::ioctl(
-                self.handle.fd(),
-                v4l2::vidioc::VIDIOC_REQBUFS,
-                &mut v4l2_reqbufs as *mut _ as *mut std::os::raw::c_void,
-            )?;
-        }
-
-        // allocate the new user buffers
-        self.bufs.resize(v4l2_reqbufs.count as usize, Vec::new());
-        for i in 0..v4l2_reqbufs.count {
-            let buf = &mut self.bufs[i as usize];
-            unsafe {
-                buf.resize(v4l2_fmt.fmt.pix.sizeimage as usize, 0);
-            }
-        }
-
-        Ok(v4l2_reqbufs.count)
-    }
-
-    fn release(&mut self) -> io::Result<()> {
-        // free all buffers by requesting 0
-        let mut v4l2_reqbufs: v4l2_requestbuffers;
-        unsafe {
-            v4l2_reqbufs = mem::zeroed();
-            v4l2_reqbufs.type_ = self.buf_type as u32;
-            v4l2_reqbufs.count = 0;
-            v4l2_reqbufs.memory = Memory::UserPtr as u32;
-            v4l2::ioctl(
-                self.handle.fd(),
-                v4l2::vidioc::VIDIOC_REQBUFS,
-                &mut v4l2_reqbufs as *mut _ as *mut std::os::raw::c_void,
-            )
-        }
-    }
-
-    fn get(&self, index: usize) -> Option<&Self::Buffer> {
-        Some(self.bufs.get(index)?)
-    }
-
-    fn get_mut(&mut self, index: usize) -> Option<&mut Self::Buffer> {
-        Some(self.bufs.get_mut(index)?)
-    }
-
-    unsafe fn get_unchecked(&self, index: usize) -> &Self::Buffer {
-        self.bufs.get_unchecked(index)
-    }
-
-    unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut Self::Buffer {
-        self.bufs.get_unchecked_mut(index)
-    }
-
-    fn len(&self) -> usize {
-        self.bufs.len()
     }
 }

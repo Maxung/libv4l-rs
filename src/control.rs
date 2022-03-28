@@ -51,9 +51,9 @@ impl TryFrom<u32> for Type {
     }
 }
 
-impl Into<u32> for Type {
-    fn into(self) -> u32 {
-        self as u32
+impl From<Type> for u32 {
+    fn from(t: Type) -> Self {
+        t as Self
     }
 }
 
@@ -85,13 +85,13 @@ bitflags! {
 
 impl From<u32> for Flags {
     fn from(flags: u32) -> Self {
-        Flags::from_bits_truncate(flags)
+        Self::from_bits_truncate(flags)
     }
 }
 
-impl Into<u32> for Flags {
-    fn into(self) -> u32 {
-        self.bits()
+impl From<Flags> for u32 {
+    fn from(flags: Flags) -> Self {
+        flags.bits()
     }
 }
 
@@ -167,7 +167,7 @@ pub struct Description {
 
 impl From<v4l2_query_ext_ctrl> for Description {
     fn from(ctrl: v4l2_query_ext_ctrl) -> Self {
-        Description {
+        Self {
             id: ctrl.id,
             typ: Type::try_from(ctrl.type_).unwrap(),
             name: unsafe { ffi::CStr::from_ptr(ctrl.name.as_ptr()) }
@@ -231,8 +231,10 @@ impl TryInto<v4l2_control> for Control {
 
     fn try_into(self) -> Result<v4l2_control, Self::Error> {
         unsafe {
-            let mut ctrl: v4l2_control = mem::zeroed();
-            ctrl.id = self.id;
+            let mut ctrl = v4l2_control {
+                id: self.id,
+                ..mem::zeroed()
+            };
             match self.value {
                 Value::None => Ok(ctrl),
                 Value::Integer(val) => {

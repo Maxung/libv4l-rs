@@ -2,7 +2,6 @@ use std::{io, mem, ptr, slice, sync::Arc};
 
 use crate::buffer;
 use crate::device::Handle;
-use crate::io::arena::Arena as ArenaTrait;
 use crate::memory::Memory;
 use crate::v4l2;
 use crate::v4l_sys::*;
@@ -13,8 +12,8 @@ use crate::v4l_sys::*;
 /// In case of errors during unmapping, we panic because there is memory corruption going on.
 pub struct Arena<'a> {
     handle: Arc<Handle>,
-    bufs: Vec<&'a mut [u8]>,
-    buf_type: buffer::Type,
+    pub bufs: Vec<&'a mut [u8]>,
+    pub buf_type: buffer::Type,
 }
 
 impl<'a> Arena<'a> {
@@ -34,41 +33,29 @@ impl<'a> Arena<'a> {
             buf_type,
         }
     }
-}
 
-impl<'a> Drop for Arena<'a> {
-    fn drop(&mut self) {
-        if self.bufs.is_empty() {
-            // nothing to do
-            return;
-        }
-
-        if let Err(e) = self.release() {
-            if let Some(code) = e.raw_os_error() {
-                // ENODEV means the file descriptor wrapped in the handle became invalid, most
-                // likely because the device was unplugged or the connection (USB, PCI, ..)
-                // broke down. Handle this case gracefully by ignoring it.
-                if code == 19 {
-                    /* ignore */
-                    return;
-                }
-            }
-
-            panic!("{:?}", e)
+    fn buffer_desc(&self) -> v4l2_buffer {
+        v4l2_buffer {
+            type_: self.buf_type as u32,
+            memory: Memory::Mmap as u32,
+            ..unsafe { mem::zeroed() }
         }
     }
-}
 
-impl<'a> ArenaTrait for Arena<'a> {
-    type Buffer = [u8];
+    fn requestbuffers_desc(&self) -> v4l2_requestbuffers {
+        v4l2_requestbuffers {
+            type_: self.buf_type as u32,
+            memory: Memory::Mmap as u32,
+            ..unsafe { mem::zeroed() }
+        }
+    }
 
-    fn allocate(&mut self, count: u32) -> io::Result<u32> {
-        let mut v4l2_reqbufs: v4l2_requestbuffers;
+    pub fn allocate(&mut self, count: u32) -> io::Result<u32> {
+        let mut v4l2_reqbufs = v4l2_requestbuffers {
+            count,
+            ..self.requestbuffers_desc()
+        };
         unsafe {
-            v4l2_reqbufs = mem::zeroed();
-            v4l2_reqbufs.type_ = self.buf_type as u32;
-            v4l2_reqbufs.count = count;
-            v4l2_reqbufs.memory = Memory::Mmap as u32;
             v4l2::ioctl(
                 self.handle.fd(),
                 v4l2::vidioc::VIDIOC_REQBUFS,
@@ -76,13 +63,12 @@ impl<'a> ArenaTrait for Arena<'a> {
             )?;
         }
 
-        for i in 0..v4l2_reqbufs.count {
-            let mut v4l2_buf: v4l2_buffer;
+        for index in 0..v4l2_reqbufs.count {
+            let mut v4l2_buf = v4l2_buffer {
+                index,
+                ..self.buffer_desc()
+            };
             unsafe {
-                v4l2_buf = mem::zeroed();
-                v4l2_buf.type_ = self.buf_type as u32;
-                v4l2_buf.memory = Memory::Mmap as u32;
-                v4l2_buf.index = i;
                 v4l2::ioctl(
                     self.handle.fd(),
                     v4l2::vidioc::VIDIOC_QUERYBUF,
@@ -107,7 +93,7 @@ impl<'a> ArenaTrait for Arena<'a> {
         Ok(v4l2_reqbufs.count)
     }
 
-    fn release(&mut self) -> io::Result<()> {
+    pub fn release(&mut self) -> io::Result<()> {
         for buf in &self.bufs {
             unsafe {
                 v4l2::munmap(buf.as_ptr() as *mut core::ffi::c_void, buf.len())?;
@@ -115,12 +101,11 @@ impl<'a> ArenaTrait for Arena<'a> {
         }
 
         // free all buffers by requesting 0
-        let mut v4l2_reqbufs: v4l2_requestbuffers;
+        let mut v4l2_reqbufs = v4l2_requestbuffers {
+            count: 0,
+            ..self.requestbuffers_desc()
+        };
         unsafe {
-            v4l2_reqbufs = mem::zeroed();
-            v4l2_reqbufs.type_ = self.buf_type as u32;
-            v4l2_reqbufs.count = 0;
-            v4l2_reqbufs.memory = Memory::Mmap as u32;
             v4l2::ioctl(
                 self.handle.fd(),
                 v4l2::vidioc::VIDIOC_REQBUFS,
@@ -131,24 +116,27 @@ impl<'a> ArenaTrait for Arena<'a> {
         self.bufs.clear();
         Ok(())
     }
+}
 
-    fn get(&self, index: usize) -> Option<&Self::Buffer> {
-        Some(self.bufs.get(index)?)
-    }
+impl<'a> Drop for Arena<'a> {
+    fn drop(&mut self) {
+        if self.bufs.is_empty() {
+            // nothing to do
+            return;
+        }
 
-    fn get_mut(&mut self, index: usize) -> Option<&mut Self::Buffer> {
-        Some(self.bufs.get_mut(index)?)
-    }
+        if let Err(e) = self.release() {
+            if let Some(code) = e.raw_os_error() {
+                // ENODEV means the file descriptor wrapped in the handle became invalid, most
+                // likely because the device was unplugged or the connection (USB, PCI, ..)
+                // broke down. Handle this case gracefully by ignoring it.
+                if code == 19 {
+                    /* ignore */
+                    return;
+                }
+            }
 
-    unsafe fn get_unchecked(&self, index: usize) -> &Self::Buffer {
-        self.bufs.get_unchecked(index)
-    }
-
-    unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut Self::Buffer {
-        self.bufs.get_unchecked_mut(index)
-    }
-
-    fn len(&self) -> usize {
-        self.bufs.len()
+            panic!("{:?}", e)
+        }
     }
 }

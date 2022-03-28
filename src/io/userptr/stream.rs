@@ -2,7 +2,6 @@ use std::{io, mem, sync::Arc};
 
 use crate::buffer::{Metadata, Type};
 use crate::device::{Device, Handle};
-use crate::io::arena::Arena as ArenaTrait;
 use crate::io::traits::{CaptureStream, Stream as StreamTrait};
 use crate::io::userptr::arena::Arena;
 use crate::memory::Memory;
@@ -61,6 +60,14 @@ impl Stream {
             active: false,
         })
     }
+
+    fn buffer_desc(&self) -> v4l2_buffer {
+        v4l2_buffer {
+            type_: self.buf_type as u32,
+            memory: Memory::UserPtr as u32,
+            ..unsafe { mem::zeroed() }
+        }
+    }
 }
 
 impl Drop for Stream {
@@ -115,15 +122,16 @@ impl StreamTrait for Stream {
 
 impl<'a> CaptureStream<'a> for Stream {
     fn queue(&mut self, index: usize) -> io::Result<()> {
-        let mut v4l2_buf: v4l2_buffer;
-        let buf = unsafe { &mut self.arena.get_unchecked(index) };
+        let buf = &mut self.arena.bufs[index];
+        let mut v4l2_buf = v4l2_buffer {
+            index: index as u32,
+            m: v4l2_buffer__bindgen_ty_1 {
+                userptr: buf.as_ptr() as std::os::raw::c_ulong,
+            },
+            length: buf.len() as u32,
+            ..self.buffer_desc()
+        };
         unsafe {
-            v4l2_buf = mem::zeroed();
-            v4l2_buf.type_ = self.buf_type as u32;
-            v4l2_buf.memory = Memory::UserPtr as u32;
-            v4l2_buf.index = index as u32;
-            v4l2_buf.m.userptr = buf.as_ptr() as std::os::raw::c_ulong;
-            v4l2_buf.length = buf.len() as u32;
             v4l2::ioctl(
                 self.handle.fd(),
                 v4l2::vidioc::VIDIOC_QBUF,
@@ -135,11 +143,8 @@ impl<'a> CaptureStream<'a> for Stream {
     }
 
     fn dequeue(&mut self) -> io::Result<usize> {
-        let mut v4l2_buf: v4l2_buffer;
+        let mut v4l2_buf = self.buffer_desc();
         unsafe {
-            v4l2_buf = mem::zeroed();
-            v4l2_buf.type_ = self.buf_type as u32;
-            v4l2_buf.memory = Memory::UserPtr as u32;
             v4l2::ioctl(
                 self.handle.fd(),
                 v4l2::vidioc::VIDIOC_DQBUF,
@@ -159,18 +164,10 @@ impl<'a> CaptureStream<'a> for Stream {
         Ok(self.arena_index)
     }
 
-    fn get(&self, index: usize) -> Option<&Self::Item> {
-        self.arena.get(index)
-    }
-
-    fn get_meta(&self, index: usize) -> Option<&Metadata> {
-        self.buf_meta.get(index)
-    }
-
     fn next(&'a mut self) -> io::Result<(&Self::Item, &Metadata)> {
         if !self.active {
             // Enqueue all buffers once on stream start
-            for index in 0..self.arena.len() {
+            for index in 0..self.arena.bufs.len() {
                 self.queue(index)?;
             }
 
@@ -183,10 +180,8 @@ impl<'a> CaptureStream<'a> for Stream {
 
         // The index used to access the buffer elements is given to us by v4l2, so we assume it
         // will always be valid.
-        unsafe {
-            let bytes = self.arena.get_unchecked(self.arena_index);
-            let meta = self.buf_meta.get_unchecked(self.arena_index);
-            Ok((bytes, meta))
-        }
+        let bytes = &mut self.arena.bufs[self.arena_index];
+        let meta = &self.buf_meta[self.arena_index];
+        Ok((bytes, meta))
     }
 }

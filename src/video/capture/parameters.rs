@@ -13,13 +13,13 @@ bitflags! {
 
 impl From<u32> for Modes {
     fn from(caps: u32) -> Self {
-        Modes::from_bits_truncate(caps)
+        Self::from_bits_truncate(caps)
     }
 }
 
-impl Into<u32> for Modes {
-    fn into(self) -> u32 {
-        self.bits()
+impl From<Modes> for u32 {
+    fn from(modes: Modes) -> Self {
+        modes.bits()
     }
 }
 
@@ -66,7 +66,7 @@ impl fmt::Display for Parameters {
 
 impl From<v4l2_captureparm> for Parameters {
     fn from(params: v4l2_captureparm) -> Self {
-        Parameters {
+        Self {
             capabilities: Capabilities::from(params.capability),
             modes: Modes::from(params.capturemode),
             interval: Fraction::from(params.timeperframe),
@@ -74,16 +74,13 @@ impl From<v4l2_captureparm> for Parameters {
     }
 }
 
-impl Into<v4l2_captureparm> for Parameters {
-    fn into(self: Parameters) -> v4l2_captureparm {
-        let mut params: v4l2_captureparm;
-        unsafe {
-            params = mem::zeroed();
+impl From<Parameters> for v4l2_captureparm {
+    fn from(parameters: Parameters) -> Self {
+        Self {
+            capability: parameters.capabilities.into(),
+            capturemode: parameters.modes.into(),
+            timeperframe: parameters.interval.into(),
+            ..unsafe { mem::zeroed() }
         }
-
-        params.capability = self.capabilities.into();
-        params.capturemode = self.modes.into();
-        params.timeperframe = self.interval.into();
-        params
     }
 }
